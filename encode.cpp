@@ -81,20 +81,15 @@ const uint8_t* findNextNalUnit(const uint8_t *pStart,
 }
 
 PictureType getImageType(const uint8_t *pDataStart, size_t lDataSize) {
-
     if (lDataSize < 4) {
         return PictureType::Unknown;
     }
-
     const uint8_t *pDataEnd = pDataStart + lDataSize;
     uint8_t lNalCode;
     const uint8_t *nalPayload;
     bool lEndReached = false;
     const uint8_t* pNalEnd = findNextNalUnit(pDataStart, pDataEnd, &lNalCode, &nalPayload, &lEndReached) - 1 ;
-    if (pNalEnd == nullptr) {
-        return PictureType::Unknown;;
-    }
-    if (lEndReached) {
+    if (pNalEnd == nullptr || lEndReached) {
         return PictureType::Unknown;;
     }
     uint8_t lCurrentNalCode = lNalCode;
@@ -104,34 +99,26 @@ PictureType getImageType(const uint8_t *pDataStart, size_t lDataSize) {
         if (lEndReached == true) {
             pNalEnd = pDataEnd;
         }
-        size_t lNalSize = pNalEnd - pStartOfPayload;
-
         uint8_t nal_ref_idc = lCurrentNalCode >> 5;
         lCurrentNalCode = lCurrentNalCode & 0x1f;
-
-        if (lCurrentNalCode == 7 ) {
+        if (lCurrentNalCode == 7) {
             //SPS
-            // QSV_LOGGER(false,LOGG_NOTIFY,"Found SPS size > " << unsigned(lNalSize))
         } else if (lCurrentNalCode == 8 ) {
             //PPS
-            // QSV_LOGGER(false,LOGG_NOTIFY,"Found PPS size > " << unsigned(lNalSize))
         } else if (lCurrentNalCode == 9) {
-            // QSV_LOGGER(false,LOGG_NOTIFY,"AUD")
+            //AUD
         } else if (lCurrentNalCode == 5) {
             //IDR
             return PictureType::IDR;
         } else if (lCurrentNalCode == 6) {
             //SEI
-            // QSV_LOGGER(false,LOGG_NOTIFY,"SEI")
         } else if (lCurrentNalCode == 1 && nal_ref_idc == 1) {
             //P-Frame
             return PictureType::P;
         } else if (lCurrentNalCode == 1 && nal_ref_idc == 0) {
-            //P-Frame
-            //std::cout  << "B-Frame";
+            //B-Frame
             return PictureType::B;
         }
-
         if (lEndReached) {
             break;
         }
@@ -145,7 +132,6 @@ int getFreeSurfaceIndex(const std::vector<mfxFrameSurface1>& pSurfacesPool)
     auto it = std::find_if(pSurfacesPool.begin(), pSurfacesPool.end(), [](const mfxFrameSurface1& surface) {
         return 0 == surface.Data.Locked;
     });
-
     if(it == pSurfacesPool.end())
         return MFX_ERR_NOT_FOUND;
     else return it - pSurfacesPool.begin();
@@ -153,44 +139,37 @@ int getFreeSurfaceIndex(const std::vector<mfxFrameSurface1>& pSurfacesPool)
 
 int main() {
     std::cout << "Encoder started" << std::endl;
-
     // Open VA
     int lFd = open("/dev/dri/renderD128", O_RDWR);
     if (lFd < 1) {
+        std::cout << "Open VA failed." << std::endl;
         return EXIT_FAILURE;
     }
     VADisplay mVADisplay = vaGetDisplayDRM(lFd);
     if (!mVADisplay) {
         close(lFd);
+        std::cout << "vaGetDisplayDRM failed." << std::endl;
         return EXIT_FAILURE;
     }
-
     int lMajor = 1, lMinor = 0;
     VAStatus lStatus = vaInitialize(mVADisplay, &lMajor, &lMinor);
     if (lStatus != VA_STATUS_SUCCESS) {
         close(lFd);
+        std::cout << "vaInitialize failed." << std::endl;
         return EXIT_FAILURE;
     }
-
     std::cout << "VA init OK" << std::endl;
-
-    //OK VA init OK now init MSDK
-
     MFXVideoSession lSession;
-
     mfxStatus sts = MFX_ERR_NONE;
     mfxIMPL lMfxImpl = MFX_IMPL_AUTO_ANY;
     mfxVersion lMfxVer = {
             { 34, 1}
     };
-
     sts = lSession.Init(lMfxImpl, &lMfxVer);
     if (sts != MFX_ERR_NONE) {
         std::cout << "Unable to init MSDK version " << unsigned(lMfxVer.Major) << "." << unsigned(lMfxVer.Minor) << std::endl;
         return EXIT_FAILURE;
     }
-
-    //Check if hardware or software is used
     mfxIMPL lImpl;
     sts = lSession.QueryIMPL(&lImpl);
     if (sts != MFX_ERR_NONE) {
@@ -207,18 +186,12 @@ int main() {
             return EXIT_FAILURE;
         }
     }
-
     std::cout << "MSDK init OK" << std::endl;
-
     gQSVEncoder = std::make_unique<MFXVideoENCODE>(lSession);
     if (gQSVEncoder == nullptr) {
         return EXIT_FAILURE;
     }
-
-    // Set required video parameters for encode
-    // - In this example we are encoding an AVC (H.264) stream
     mfxVideoParam mfxEncParams = {0};
-    memset(&mfxEncParams, 0, sizeof(mfxEncParams));
     mfxEncParams.mfx.CodecId = MFX_CODEC_AVC;
     mfxEncParams.mfx.TargetUsage = MFX_TARGETUSAGE_BEST_QUALITY;
     mfxEncParams.mfx.TargetKbps = 1000;
@@ -235,76 +208,55 @@ int main() {
     mfxEncParams.mfx.FrameInfo.CropY = 0;
     mfxEncParams.mfx.FrameInfo.CropW = 1280;
     mfxEncParams.mfx.FrameInfo.CropH = 720;
-    // Width must be a multiple of 16
-    // Height must be a multiple of 16 in case of frame picture and a multiple of 32 in case of field picture
     mfxEncParams.mfx.FrameInfo.Width = MSDK_ALIGN16(1280);
     mfxEncParams.mfx.FrameInfo.Height =
             (MFX_PICSTRUCT_PROGRESSIVE == mfxEncParams.mfx.FrameInfo.PicStruct) ?
             MSDK_ALIGN16(720) :
             MSDK_ALIGN32(720);
-
     mfxEncParams.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
-
-
-    // Validate video encode parameters (optional)
-    // - In this example the validation result is written to same structure
-    // - MFX_WRN_INCOMPATIBLE_VIDEO_PARAM is returned if some of the video parameters are not supported,
-    //   instead the encoder will select suitable parameters closest matching the requested configuration
     sts = gQSVEncoder->Query(&mfxEncParams, &mfxEncParams);
     if (sts != MFX_ERR_NONE) {
         std::cout << "Query failed -> " << sts << std::endl;
         return EXIT_FAILURE;
     }
-
-    // Query number of required surfaces for encoder
     mfxFrameAllocRequest EncRequest = {0};
     sts = gQSVEncoder->QueryIOSurf(&mfxEncParams, &EncRequest);
     if (sts != MFX_ERR_NONE) {
         std::cout << "QueryIOSurf failed -> " << sts << std::endl;
         return EXIT_FAILURE;
     }
-
     mfxU16 nEncSurfNum = EncRequest.NumFrameSuggested;
-
-    // Allocate surfaces for encoder
-    // - Width and height of buffer must be aligned, a multiple of 32
-    // - Frame surface array keeps pointers all surface planes and general frame info
     mfxU16 width = (mfxU16) MSDK_ALIGN32(EncRequest.Info.Width);
-    mfxU16 height = (mfxU16) MSDK_ALIGN32(EncRequest.Info.Height);
-    mfxU8 bitsPerPixel = 12;        // NV12 format is a 12 bits per pixel format
+    mfxU16 height;
+    (MFX_PICSTRUCT_PROGRESSIVE == mfxEncParams.mfx.FrameInfo.PicStruct) ?
+            height = (mfxU16) MSDK_ALIGN16(EncRequest.Info.Height) :
+            height = (mfxU16) MSDK_ALIGN32(EncRequest.Info.Height);
+    mfxU8 bitsPerPixel = 12;
     mfxU32 surfaceSize = width * height * bitsPerPixel / 8;
     std::vector<mfxU8> surfaceBuffersData(surfaceSize * nEncSurfNum, 0);
     mfxU8* surfaceBuffers = surfaceBuffersData.data();
-
-    // Allocate surface headers (mfxFrameSurface1) for encoder
     std::vector<mfxFrameSurface1> pEncSurfaces(nEncSurfNum, {0});
-    for (int i = 0; i < nEncSurfNum; i++) {
-        pEncSurfaces[i].Info = mfxEncParams.mfx.FrameInfo;
-        pEncSurfaces[i].Data.Y = &surfaceBuffers[surfaceSize * i];
-        pEncSurfaces[i].Data.U = pEncSurfaces[i].Data.Y + width * height;
-        pEncSurfaces[i].Data.V = pEncSurfaces[i].Data.U + 1;
-        pEncSurfaces[i].Data.Pitch = width;
+    int lIndex = 0;
+    for (auto &rSurf: pEncSurfaces) {
+        rSurf.Info = mfxEncParams.mfx.FrameInfo;
+        rSurf.Data.Y = &surfaceBuffers[surfaceSize * lIndex++];
+        rSurf.Data.U = rSurf.Data.Y + width * height;
+        rSurf.Data.V = rSurf.Data.U + 1;
+        rSurf.Data.Pitch = width;
     }
-
-    // Initialize the Media SDK encoder
     sts = gQSVEncoder->Init(&mfxEncParams);
     if (sts != MFX_ERR_NONE) {
         std::cout << "Init failed -> " << sts << std::endl;
         return EXIT_FAILURE;
     }
-
-    // Retrieve video parameters selected by encoder.
-    // - BufferSizeInKB parameter is required to set bit stream buffer size
     mfxVideoParam par = {0};
     sts = gQSVEncoder->GetVideoParam(&par);
     if (sts != MFX_ERR_NONE) {
         std::cout << "GetVideoParam failed -> " << sts << std::endl;
         return EXIT_FAILURE;
     }
-
     std::vector<uint8_t> lYuvData;
     std::ifstream lFile;
-    //Support a build directory or someone built in the root.
     lFile.open ("../source.yuv", std::ios::in | std::ios::binary | std::ios::ate);
     if (!lFile) {
         std::cout << "Unable reading YUV file" << std::endl;
@@ -315,31 +267,23 @@ int main() {
     lFile.seekg (0, std::ios::beg);
     lFile.read ((char*)lYuvData.data(), lSize);
     lFile.close();
-
-    // Prepare Media SDK bit stream buffer
     mfxBitstream mfxBS = {0};
     mfxBS.MaxLength = par.mfx.BufferSizeInKB * 1000;
     std::vector<mfxU8> bstData(mfxBS.MaxLength);
     mfxBS.Data = bstData.data();
-
-
     // ===================================
     // Start encoding the frames
     //
-
     int nEncSurfIdx = 0;
     mfxSyncPoint syncp;
     mfxU32 nFrame = 0;
-
     //
     // Stage 1: Main encoding loop
     //
-
     uint64_t lPts = 0;
     uint64_t lPtsAdvance =(uint64_t)(90000.0/((double)mfxEncParams.mfx.FrameInfo.FrameRateExtN/(double)mfxEncParams.mfx.FrameInfo.FrameRateExtD));
     uint64_t lFrameCounter = ENCODE_NUMBER_FRAMES;
     uint64_t lCodeStreamCounter = 0;
-
     std::ofstream lFileOut;
     lFileOut.open ("../output.h264", std::ios::out | std::ios::binary);
     if (!lFileOut) {
@@ -350,12 +294,12 @@ int main() {
     while (MFX_ERR_NONE <= sts || MFX_ERR_MORE_DATA == sts) {
         nEncSurfIdx = getFreeSurfaceIndex(pEncSurfaces);   // Find free frame surface
         if (nEncSurfIdx == MFX_ERR_NOT_FOUND) {
+            sts = MFX_ERR_NONE;
             std::this_thread::sleep_for(std::chrono::milliseconds (1));
             continue;
         }
 
         if (!lFrameCounter--) {
-            //std::cout << "Ending encoder." << std::endl;
             break;
         }
 
@@ -369,24 +313,21 @@ int main() {
         memcpy(pDataY, lYuvData.data(), lNumYsamples);
         memcpy(pDataUV, lYuvData.data() + lNumYsamples, lNumUVsamples);
 
-        for (;;) {
-            // Encode a frame asychronously (returns immediately)
+        while (true) {
             sts = gQSVEncoder->EncodeFrameAsync(NULL, &pEncSurfaces[nEncSurfIdx], &mfxBS, &syncp);
-
             if (MFX_ERR_NONE < sts && !syncp) {     // Repeat the call if warning and no output
                 if (MFX_WRN_DEVICE_BUSY == sts)
                     std::this_thread::sleep_for(std::chrono::milliseconds (10));  // Wait if device is busy, then repeat the same call
             } else if (MFX_ERR_NONE < sts && syncp) {
                 sts = MFX_ERR_NONE;     // Ignore warnings if output is available
                 break;
-            } else if (MFX_ERR_NOT_ENOUGH_BUFFER == sts) {
+            } else if (sts == MFX_ERR_NOT_ENOUGH_BUFFER) {
                 // Allocate more bitstream buffer memory here if needed...
                 break;
             } else
                 break;
         }
-
-        if (MFX_ERR_NONE == sts) {
+        if (sts == MFX_ERR_NONE) {
             sts = lSession.SyncOperation(syncp, 1000);      // Synchronize. Wait until encoded frame is ready
             if (sts == MFX_ERR_NONE) {
                 PictureType lPicType=getImageType(mfxBS.Data, mfxBS.DataLength);
@@ -412,14 +353,9 @@ int main() {
         sts = MFX_ERR_NONE;
     }
 
-    //
-    // Stage 2: Retrieve the buffered encoded frames
-    //
     while (MFX_ERR_NONE <= sts) {
-        for (;;) {
-            // Encode a frame asychronously (returns immediately)
+        while (true) {
             sts = gQSVEncoder->EncodeFrameAsync(NULL, NULL, &mfxBS, &syncp);
-
             if (MFX_ERR_NONE < sts && !syncp) {     // Repeat the call if warning and no output
                 if (MFX_WRN_DEVICE_BUSY == sts)
                     std::this_thread::sleep_for(std::chrono::milliseconds (10)); ;  // Wait if device is busy, then repeat the same call
@@ -430,7 +366,7 @@ int main() {
                 break;
         }
 
-        if (MFX_ERR_NONE == sts) {
+        if (sts == MFX_ERR_NONE) {
             sts = lSession.SyncOperation(syncp, 1000);      // Synchronize. Wait until encoded frame is ready
             if (sts == MFX_ERR_NONE) {
                 PictureType lPicType=getImageType(mfxBS.Data, mfxBS.DataLength);
@@ -452,10 +388,6 @@ int main() {
         }
     }
 
-    // ===================================================================
-    // Clean up resources
-    //  - It is recommended to close Media SDK components first, before releasing allocated surfaces, since
-    //    some surfaces may still be locked by internal Media SDK resources.
     gQSVEncoder->Close();
     lSession.Close();
     close(lFd);
